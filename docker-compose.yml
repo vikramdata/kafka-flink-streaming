@@ -1,0 +1,124 @@
+x-flink-config: &flink-config
+  # Shared Flink settings; the image's entrypoint writes these into its config.
+  FLINK_PROPERTIES: |
+    jobmanager.rpc.address: jobmanager
+    rest.address: jobmanager
+    jobmanager.memory.process.size: 1024m
+    taskmanager.memory.process.size: 1728m
+    taskmanager.numberOfTaskSlots: 4
+    parallelism.default: 3
+    execution.checkpointing.interval: 30s
+    state.backend.type: hashmap
+    table.exec.source.idle-timeout: 30s
+
+services:
+  # ---------------------------------------------------------------- Kafka (KRaft, no ZooKeeper)
+  kafka:
+    image: apache/kafka:3.9.2
+    ports:
+      - "29092:29092"        # for clients on your laptop
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_HEAP_OPTS: "-Xms512m -Xmx512m"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+
+  kafka-init:
+    image: apache/kafka:3.9.2
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic orders --partitions 3 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic order_alerts --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8082:8080"          # Kafka UI (8080 is left free for Airflow from the other project)
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+
+  # ---------------------------------------------------------------- Event producer
+  producer:
+    build: ./producer
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      EVENTS_PER_SECOND: "10"
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------- Flink cluster
+  jobmanager:
+    build: ./flink
+    command: jobmanager
+    ports:
+      - "8081:8081"          # Flink web UI
+    environment:
+      <<: *flink-config
+
+  taskmanager:
+    build: ./flink
+    command: taskmanager
+    depends_on: [jobmanager]
+    environment:
+      <<: *flink-config
+
+  flink-sql-runner:
+    build: ./flink
+    command: ["bash", "/opt/submit-job.sh"]
+    depends_on:
+      jobmanager:
+        condition: service_started
+      taskmanager:
+        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *flink-config
+    restart: "no"
+
+  # ---------------------------------------------------------------- Results database
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: streaming
+    ports:
+      - "5434:5432"
+    volumes:
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./postgres/queries.sql:/queries.sql
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d streaming"]
+      interval: 5s
+      retries: 10
+
+volumes:
+  pgdata:
