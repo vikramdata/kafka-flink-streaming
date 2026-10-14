@@ -1,4 +1,5 @@
 # Real-Time Order Analytics with Kafka + Flink SQL
+![CI](https://github.com/vikramdata/kafka-flink-streaming/actions/workflows/ci.yml/badge.svg)
 
 A streaming pipeline that processes e-commerce orders **as they happen**. A Python producer
 streams order events into **Apache Kafka**; an **Apache Flink SQL** job computes windowed KPIs,
