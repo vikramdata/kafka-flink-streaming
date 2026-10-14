@@ -18,6 +18,19 @@ flowchart LR
     F -->|filter amount ≥ 500| A[(Postgres<br/>order_alerts)]
     F -->|filter amount ≥ 500| KA[(Kafka topic<br/>order_alerts)]
 ```
+## Screenshots
+
+**Flink: one job, Kafka source fanned out to five streaming pipelines**
+![Flink job graph](docs/images/flink-job.png)
+
+**Flink checkpoints: fault tolerance with 30-second checkpoints**
+![Flink checkpoints](docs/images/flink-checkpoints.png)
+
+**Kafka: live order events on the `orders` topic**
+![Kafka messages](docs/images/kafka-messages.png)
+
+**Results in Postgres: windowed revenue, sliding category sales, live customer stats, alerts**
+![Query results](docs/images/query-results.png)
 
 ## What the Flink job does
 
